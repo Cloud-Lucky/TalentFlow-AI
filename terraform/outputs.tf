@@ -1,0 +1,11 @@
+output "alb_dns_name" { value = aws_lb.main.dns_name }
+output "ecr_repository_url" { value = aws_ecr_repository.api.repository_url }
+output "rds_endpoint" { value = aws_db_instance.main.address }
+output "resume_bucket_name" { value = aws_s3_bucket.resumes.bucket }
+output "resume_queue_url" { value = aws_sqs_queue.resume.url }
+output "notification_topic_arn" { value = aws_sns_topic.notifications.arn }
+output "event_bus_name" { value = aws_cloudwatch_event_bus.main.name }
+output "ecs_cluster_name" { value = aws_ecs_cluster.main.name }
+output "frontend_bucket_name" { value = aws_s3_bucket.frontend.bucket }
+output "cloudfront_domain_name" { value = aws_cloudfront_distribution.frontend.domain_name }
+output "resume_worker_name" { value = aws_lambda_function.resume_worker.function_name }

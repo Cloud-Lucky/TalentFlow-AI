@@ -1,0 +1,12 @@
+.env
+*.tfvars
+!terraform.tfvars.example
+.terraform/
+terraform/.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+terraform/resume_worker.zip
+__pycache__/
+*.pyc
+*.db
+.DS_Store
