@@ -51,16 +51,119 @@ def create_job():
     except Exception: current_app.logger.exception("EventBridge publish failed; job was still created")
     return jsonify(id=job.id, title=job.title, department=job.department, description=job.description, status=job.status), 201
 
+
+@api.get("/candidates")
+@jwt_required()
+def list_candidates():
+    candidates = Candidate.query.order_by(
+        Candidate.created_at.desc()
+    ).all()
+
+    return jsonify([
+        {
+            "id": c.id,
+            "name": c.full_name,
+            "email": c.email,
+            "phone": c.phone,
+            "role": c.role,
+            "experience": c.experience,
+            "score": c.score,
+            "stage": c.stage,
+            "source": c.source,
+            "applied": c.created_at.date().isoformat()
+        }
+        for c in candidates
+    ])
+
+
 @api.post("/candidates")
+@jwt_required()
 def create_candidate():
     data = request.get_json(silent=True) or {}
-    name, email = str(data.get("full_name", "")).strip(), str(data.get("email", "")).strip().lower()
-    if not name or not email or "@" not in email: return jsonify(error="full_name and valid email are required"), 400
-    candidate = Candidate(full_name=name, email=email, phone=str(data.get("phone", ""))[:40])
-    db.session.add(candidate); db.session.commit()
-    try: publish_event("CANDIDATE_CREATED", {"candidate_id": candidate.id})
-    except Exception: current_app.logger.exception("EventBridge publish failed; candidate was still created")
-    return jsonify(id=candidate.id, full_name=candidate.full_name, email=candidate.email), 201
+
+    name = str(data.get("full_name", "")).strip()
+    email = str(data.get("email", "")).strip().lower()
+
+    if not name or not email or "@" not in email:
+        return jsonify(
+            error="full_name and valid email are required"
+        ), 400
+
+    try:
+        score = int(data.get("score", 0))
+    except (TypeError, ValueError):
+        return jsonify(error="score must be an integer"), 400
+
+    if not 0 <= score <= 100:
+        return jsonify(error="score must be between 0 and 100"), 400
+
+    candidate = Candidate(
+        full_name=name,
+        email=email,
+        phone=str(data.get("phone", ""))[:40],
+        role=str(data.get("role", ""))[:160],
+        experience=str(data.get("experience", ""))[:80],
+        score=score,
+        stage="Applied",
+        source=str(data.get("source", "Website"))[:80]
+    )
+
+    db.session.add(candidate)
+    db.session.commit()
+
+    try:
+        publish_event("CANDIDATE_CREATED", {
+            "candidate_id": candidate.id
+        })
+    except Exception:
+        current_app.logger.exception(
+            "EventBridge publish failed; candidate was still created"
+        )
+
+    return jsonify(
+        id=candidate.id,
+        name=candidate.full_name,
+        email=candidate.email,
+        role=candidate.role,
+        experience=candidate.experience,
+        score=candidate.score,
+        stage=candidate.stage,
+        source=candidate.source
+    ), 201
+
+@api.put("/candidates/<int:candidate_id>")
+@jwt_required()
+def update_candidate(candidate_id):
+    data = request.get_json(silent=True) or {}
+
+    stage = str(data.get("stage", "")).strip()
+
+    allowed_stages = [
+        "Applied",
+        "Screening",
+        "Shortlisted",
+        "Interview",
+        "Offer",
+        "Hired",
+        "Rejected"
+    ]
+
+    if stage not in allowed_stages:
+        return jsonify(error="Invalid candidate stage"), 400
+
+    candidate = db.session.get(Candidate, candidate_id)
+
+    if not candidate:
+        return jsonify(error="Candidate not found"), 404
+
+    candidate.stage = stage
+    db.session.commit()
+
+    return jsonify(
+        message="Candidate stage updated successfully",
+        id=candidate.id,
+        stage=candidate.stage
+    ), 200
 
 @api.post("/resumes/presign")
 def presign_resume():

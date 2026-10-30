@@ -23,11 +23,55 @@ const demoData={
 };
 
 let data=loadData();
-let currentUser=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');
+let currentUser=JSON.parse(sessionStorage.getItem(SESSION_KEY)||'null');
+let authToken=sessionStorage.getItem('talentflow_ai_token');
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
+async function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+
+  if (options.body) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    headers
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      result.error || result.msg || `Request failed (${response.status})`
+    );
+  }
+
+  return result;
+}
+
+async function loadCandidates() {
+  const candidates = await apiFetch('/api/candidates');
+
+  data.candidates = candidates.map(c => ({
+    id: c.id,
+    name: c.name,
+    email: c.email,
+    phone: c.phone,
+    role: c.role,
+    experience: c.experience,
+    score: c.score,
+    stage: c.stage,
+    applied: c.applied,
+    source: c.source
+  }));
+}
 function loadData(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||structuredClone(demoData)}catch{return structuredClone(demoData)}}
 function saveData(){localStorage.setItem(STORAGE_KEY,JSON.stringify(data))}
 function showToast(message){const el=document.createElement('div');el.className='toast';el.textContent=message;$('toastContainer').appendChild(el);setTimeout(()=>el.remove(),2800)}
@@ -36,24 +80,180 @@ function fmtDate(v){if(!v)return '—';return new Date(v+'T00:00:00').toLocaleDa
 function stageClass(stage){return stage.toLowerCase().replace(/\s/g,'-')}
 
 function initAuth(){
- if(currentUser){$('authScreen').classList.add('hidden');$('app').classList.remove('hidden');updateUserUI();renderAll();}
- $('showRegister').onclick=()=>{$('loginPanel').classList.add('hidden');$('registerPanel').classList.remove('hidden')};
- $('showLogin').onclick=()=>{$('registerPanel').classList.add('hidden');$('loginPanel').classList.remove('hidden')};
- document.querySelectorAll('.password-toggle').forEach(btn=>btn.onclick=()=>{const input=$(btn.dataset.target);input.type=input.type==='password'?'text':'password';btn.textContent=input.type==='password'?'Show':'Hide'});
- $('loginForm').onsubmit=e=>{e.preventDefault();const email=$('loginEmail').value.trim(),pass=$('loginPassword').value;if(email==='admin@talentflowai.com'&&pass==='Admin@123'){currentUser={name:'Admin',email};localStorage.setItem(SESSION_KEY,JSON.stringify(currentUser));$('authScreen').classList.add('hidden');$('app').classList.remove('hidden');updateUserUI();renderAll();showToast('Welcome to TalentFlow AI')}else showToast('Create account')};
- $('registerForm').onsubmit=e=>{e.preventDefault();if($('registerPassword').value!==$('registerConfirmPassword').value)return showToast('Passwords do not match');currentUser={name:$('registerFirstName').value+' '+$('registerLastName').value,email:$('registerEmail').value};localStorage.setItem(SESSION_KEY,JSON.stringify(currentUser));$('authScreen').classList.add('hidden');$('app').classList.remove('hidden');updateUserUI();renderAll();showToast('Account created successfully')};
- $('forgotPassword').onclick=()=>showToast('Password reset instructions would be sent to your email.');
+ 
+ const showApp = async () => {
+  $('authScreen').classList.add('hidden');
+  $('app').classList.remove('hidden');
+
+  updateUserUI();
+
+  try {
+    await loadCandidates();
+  } catch (error) {
+    data.candidates = [];
+    showToast('Could not load candidates: ' + error.message);
+  }
+
+  renderAll();
+};
+
+ const clearSession=()=>{
+  currentUser=null;
+  authToken=null;
+  sessionStorage.removeItem(SESSION_KEY);
+  sessionStorage.removeItem('talentflow_ai_token');
+ };
+
+ const saveSession=(user,token,displayName)=>{
+  authToken=token;
+  currentUser={
+   name:displayName || user.email.split('@')[0],
+   email:user.email,
+   role:user.role
+  };
+  sessionStorage.setItem('talentflow_ai_token',authToken);
+  sessionStorage.setItem(SESSION_KEY,JSON.stringify(currentUser));
+ };
+
+ const apiRequest=async(url,body)=>{
+  const response=await fetch(url,{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(body)
+  });
+  const result=await response.json();
+  if(!response.ok)throw new Error(result.error||'Request failed');
+  return result;
+ };
+
+ $('showRegister').onclick=()=>{
+  $('loginPanel').classList.add('hidden');
+  $('registerPanel').classList.remove('hidden');
+ };
+
+ $('showLogin').onclick=()=>{
+  $('registerPanel').classList.add('hidden');
+  $('loginPanel').classList.remove('hidden');
+ };
+
+ document.querySelectorAll('.password-toggle').forEach(btn=>{
+  btn.onclick=()=>{
+   const input=$(btn.dataset.target);
+   input.type=input.type==='password'?'text':'password';
+   btn.textContent=input.type==='password'?'Show':'Hide';
+  };
+ });
+
+ $('loginForm').onsubmit=async e=>{
+  e.preventDefault();
+
+  const email=$('loginEmail').value.trim();
+  const pass=$('loginPassword').value;
+
+  try{
+   const result=await apiRequest('/api/auth/login',{
+    email:email,
+    password:pass
+   });
+
+   saveSession(result.user,result.access_token);
+   showApp();
+   showToast('Login successful');
+  }catch(error){
+   showToast(error.message);
+  }
+ };
+
+ $('registerForm').onsubmit=async e=>{
+  e.preventDefault();
+
+  const firstName=$('registerFirstName').value.trim();
+  const lastName=$('registerLastName').value.trim();
+  const email=$('registerEmail').value.trim();
+  const password=$('registerPassword').value;
+  const confirmPassword=$('registerConfirmPassword').value;
+
+  if(password!==confirmPassword){
+   showToast('Passwords do not match');
+   return;
+  }
+
+  if(password.length<12){
+   showToast('Password must contain at least 12 characters');
+   return;
+  }
+
+  try{
+   await apiRequest('/api/auth/register',{
+    email:email,
+    password:password
+   });
+
+   const result=await apiRequest('/api/auth/login',{
+    email:email,
+    password:password
+   });
+
+   saveSession(
+    result.user,
+    result.access_token,
+    `${firstName} ${lastName}`.trim()
+   );
+
+   showApp();
+   showToast('Account created successfully');
+  }catch(error){
+   showToast(error.message);
+  }
+ };
+
+ $('forgotPassword').onclick=()=>{
+  showToast('Password reset is not yet implemented.');
+ };
+
+ // Validate an existing session with the backend.
+ if(authToken){
+  fetch('/api/me',{
+   headers:{Authorization:`Bearer ${authToken}`}
+  })
+  .then(async response=>{
+   if(!response.ok)throw new Error('Session expired');
+   return response.json();
+  })
+  .then(user=>{
+   currentUser={
+    name:currentUser?.name||user.email.split('@')[0],
+    email:user.email,
+    role:user.role
+   };
+   sessionStorage.setItem(SESSION_KEY,JSON.stringify(currentUser));
+   showApp();
+  })
+  .catch(()=>{
+   clearSession();
+   $('authScreen').classList.remove('hidden');
+   $('app').classList.add('hidden');
+  });
+ }else{
+  $('authScreen').classList.remove('hidden');
+  $('app').classList.add('hidden');
+ }
 }
+
 function updateUserUI(){const u=currentUser||{name:'Admin',email:'admin@talentflowai.com'};$('sidebarUserName').textContent=u.name;$('sidebarUserEmail').textContent=u.email;$('sidebarAvatar').textContent=initials(u.name);$('welcomeName').textContent=u.name.split(' ')[0]}
 
 function initNavigation(){
  document.querySelectorAll('.nav-item[data-page]').forEach(btn=>btn.onclick=()=>navigate(btn.dataset.page));
  document.querySelectorAll('[data-page-link]').forEach(btn=>btn.onclick=()=>navigate(btn.dataset.pageLink));
  $('mobileMenu').onclick=()=>{$('sidebar').classList.toggle('open');$('sidebarOverlay').classList.toggle('open')};
- $('sidebarOverlay').onclick=()=>{$('sidebar').classList.remove('open');$('sidebarOverlay').classList.remove('open')};
- $('logoutButton').onclick=()=>{localStorage.removeItem(SESSION_KEY);location.reload()};
+ $('sidebarOverlay').onclick=()=>{$('sidebar').classList.remove('active');$('sidebarOverlay').classList.remove('active')};
+ $('logoutButton').onclick=()=>{
+ sessionStorage.removeItem(SESSION_KEY);
+ sessionStorage.removeItem('talentflow_ai_token');
+ location.reload();
+};
 }
-function navigate(page){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));const target=$('page-'+page);if(target)target.classList.add('active');document.querySelectorAll('.nav-item[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));const titles={dashboard:'Recruitment Dashboard',candidates:'Candidates',jobs:'Job Openings',interviews:'Scheduled Interviews',pipeline:'Candidate Pipeline',analytics:'Recruitment Analytics',settings:'Settings'};$('pageTitle').textContent=titles[page]||'TalentFlow AI';$('sidebar').classList.remove('open');$('sidebarOverlay').classList.remove('open');renderAll()}
+function navigate(page){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));const target=$('page-'+page);if(target)target.classList.add('active');document.querySelectorAll('.nav-item[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));const titles={dashboard:'Recruitment Dashboard',candidates:'Candidates',jobs:'Job Openings',interviews:'Scheduled Interviews',pipeline:'Candidate Pipeline',analytics:'Recruitment Analytics',settings:'Settings'};$('pageTitle').textContent=titles[page]||'TalentFlow AI';$('sidebar').classList.remove('active');$('sidebarOverlay').classList.remove('active');renderAll()}
 
 function renderStats(){const c=data.candidates;$('totalCandidates').textContent=c.length;$('shortlistedCandidates').textContent=c.filter(x=>['Shortlisted','Interview','Offer'].includes(x.stage)).length;$('totalInterviews').textContent=data.interviews.length;$('totalHired').textContent=c.filter(x=>x.stage==='Hired').length;$('interviewNavCount').textContent=data.interviews.length}
 function renderDashboard(){
@@ -75,11 +275,94 @@ function renderAll(){renderStats();renderDashboard();populateRoleFilter();render
 function populateRoleFilter(){const select=$('candidateRoleFilter'),value=select.value,roles=[...new Set(data.candidates.map(c=>c.role))];select.innerHTML='<option value="all">All positions</option>'+roles.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('');select.value=roles.includes(value)?value:'all'}
 function bindCandidateButtons(){document.querySelectorAll('[data-candidate]').forEach(b=>b.onclick=()=>openCandidate(+b.dataset.candidate))}
 
-function openCandidate(id){const c=data.candidates.find(x=>x.id===id);if(!c)return;openModal('CANDIDATE','Candidate Profile',`<div><h3>${esc(c.name)}</h3><p class="ai-main-text">${esc(c.email)} · ${esc(c.experience)}</p><div class="job-meta"><span class="tag">${esc(c.role)}</span><span class="tag">AI Match ${c.score}%</span><span class="tag">${esc(c.stage)}</span></div><hr style="border:0;border-top:1px solid var(--line);margin:18px 0"><label>Update stage</label><select id="candidateStageEdit" class="form-control">${['Applied','Screening','Shortlisted','Interview','Offer','Hired','Rejected'].map(s=>`<option ${s===c.stage?'selected':''}>${s}</option>`).join('')}</select><button class="primary-button" id="saveCandidateStage" style="margin-top:14px">Save Changes</button></div>`);$('saveCandidateStage').onclick=()=>{c.stage=$('candidateStageEdit').value;saveData();closeModal();renderAll();showToast('Candidate stage updated')}}
+function openCandidate(id){const c=data.candidates.find(x=>x.id===id);if(!c)return;openModal('CANDIDATE','Candidate Profile',`<div><h3>${esc(c.name)}</h3><p class="ai-main-text">${esc(c.email)} · ${esc(c.experience)}</p><div class="job-meta"><span class="tag">${esc(c.role)}</span><span class="tag">AI Match ${c.score}%</span><span class="tag">${esc(c.stage)}</span></div><hr style="border:0;border-top:1px solid var(--line);margin:18px 0"><label>Update stage</label><select id="candidateStageEdit" class="form-control">${['Applied','Screening','Shortlisted','Interview','Offer','Hired','Rejected'].map(s=>`<option ${s===c.stage?'selected':''}>${s}</option>`).join('')}</select><button class="primary-button" id="saveCandidateStage" style="margin-top:14px">Save Changes</button></div>`);
+$('saveCandidateStage').onclick = async () => {
+    const newStage = $('candidateStageEdit').value;
+
+    try {
+        await apiFetch(`/api/candidates/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ stage: newStage })
+        });
+
+        await loadCandidates();
+
+        closeModal();
+        renderAll();
+
+        showToast('Candidate stage saved to PostgreSQL');
+    } catch (error) {
+        showToast('Error: ' + error.message);
+      }
+    };
+}
 function openInterview(id){const i=data.interviews.find(x=>x.id===id);if(!i)return;openModal('INTERVIEW','Interview Details',`<h3>${esc(i.candidate)}</h3><p class="ai-main-text">${esc(i.role)}</p><p><strong>Date:</strong> ${fmtDate(i.date)}<br><strong>Time:</strong> ${esc(i.time)}<br><strong>Interviewer:</strong> ${esc(i.interviewer)}</p><a class="primary-button" style="display:inline-block;text-decoration:none" href="${esc(i.link)}" target="_blank">Open Meeting</a>`)}
-function openModal(kicker,title,body){$('modalKicker').textContent=kicker;$('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalOverlay').classList.add('open')}
-function closeModal(){$('modalOverlay').classList.remove('open')}
-function addCandidate(){openModal('TALENT POOL','Add Candidate',`<form class="modal-form" id="candidateForm"><div><label>Name</label><input id="newName" required></div><div><label>Email</label><input type="email" id="newEmail" required></div><div><label>Position</label><input id="newRole" required></div><div><label>Experience</label><input id="newExperience" placeholder="e.g. 2 years" required></div><div><label>AI Match</label><input id="newScore" type="number" min="0" max="100" value="85" required></div><button class="primary-button">Add Candidate</button></form>`);$('candidateForm').onsubmit=e=>{e.preventDefault();data.candidates.unshift({id:Date.now(),name:$('newName').value,email:$('newEmail').value,role:$('newRole').value,experience:$('newExperience').value,score:+$('newScore').value,stage:'Applied',applied:new Date().toISOString().slice(0,10),source:'Website'});saveData();closeModal();renderAll();showToast('Candidate added')}}
+function openModal(kicker,title,body){$('modalKicker').textContent=kicker;$('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalOverlay').classList.add('active')}
+function closeModal(){$('modalOverlay').classList.remove('active')}
+
+function addCandidate() {
+  openModal(
+    'TALENT POOL',
+    'Add Candidate',
+    `<form class="modal-form" id="candidateForm">
+      <div>
+        <label>Name</label>
+        <input id="newName" required>
+      </div>
+
+      <div>
+        <label>Email</label>
+        <input type="email" id="newEmail" required>
+      </div>
+
+      <div>
+        <label>Position</label>
+        <input id="newRole" required>
+      </div>
+
+      <div>
+        <label>Experience</label>
+        <input id="newExperience" placeholder="e.g. 2 years" required>
+      </div>
+
+      <div>
+        <label>AI Match</label>
+        <input id="newScore" type="number"
+          min="0" max="100" value="85" required>
+      </div>
+
+      <button class="primary-button">Add Candidate</button>
+    </form>`
+  );
+
+  $('candidateForm').onsubmit = async e => {
+    e.preventDefault();
+
+    const candidate = {
+      full_name: $('newName').value.trim(),
+      email: $('newEmail').value.trim(),
+      role: $('newRole').value.trim(),
+      experience: $('newExperience').value.trim(),
+      score: Number($('newScore').value),
+      source: 'Website'
+    };
+
+    try {
+      await apiFetch('/api/candidates', {
+        method: 'POST',
+        body: JSON.stringify(candidate)
+      });
+
+      await loadCandidates();
+
+      closeModal();
+      renderAll();
+      showToast('Candidate saved to PostgreSQL successfully');
+    } catch (error) {
+      showToast('Error: ' + error.message);
+    }
+  };
+}
 function addJob(){openModal('RECRUITMENT','Create Job',`<form class="modal-form" id="jobForm"><div><label>Job Title</label><input id="jobTitle" required></div><div><label>Department</label><input id="jobDept" required></div><div><label>Location</label><input id="jobLocation" required></div><div><label>Type</label><select id="jobType"><option>Full-time</option><option>Part-time</option><option>Contract</option></select></div><button class="primary-button">Create Job</button></form>`);$('jobForm').onsubmit=e=>{e.preventDefault();data.jobs.unshift({id:Date.now(),title:$('jobTitle').value,department:$('jobDept').value,location:$('jobLocation').value,type:$('jobType').value,applicants:0});saveData();closeModal();renderAll();showToast('Job opening created')}}
 function scheduleInterview(){openModal('INTERVIEW MANAGEMENT','Schedule Interview',`<form class="modal-form" id="interviewForm"><div><label>Candidate</label><select id="intCandidate">${data.candidates.map(c=>`<option value="${c.id}">${esc(c.name)} — ${esc(c.role)}</option>`).join('')}</select></div><div><label>Date</label><input type="date" id="intDate" required></div><div><label>Time</label><input type="text" id="intTime" placeholder="10:30 AM" required></div><div><label>Interviewer</label><input id="intInterviewer" required></div><button class="primary-button">Schedule Interview</button></form>`);$('interviewForm').onsubmit=e=>{e.preventDefault();const c=data.candidates.find(x=>x.id===+$('intCandidate').value);data.interviews.push({id:Date.now(),candidate:c.name,role:c.role,date:$('intDate').value,time:$('intTime').value,interviewer:$('intInterviewer').value,status:'Scheduled',link:'https://meet.google.com/'});saveData();closeModal();renderAll();showToast('Interview scheduled')}}
 

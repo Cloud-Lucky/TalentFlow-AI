@@ -19,7 +19,6 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://talentflow:${POSTGRES_PASSWORD:-local-only-password}@db:5432/talentflow
       CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
-    ports: ["5000:5000"]
     depends_on:
       db:
         condition: service_healthy
