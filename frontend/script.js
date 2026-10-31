@@ -55,22 +55,19 @@ async function apiFetch(url, options = {}) {
 
   return result;
 }
+async function loadJobs() {
+    const jobs = await apiFetch('/api/jobs');
 
-async function loadCandidates() {
-  const candidates = await apiFetch('/api/candidates');
-
-  data.candidates = candidates.map(c => ({
-    id: c.id,
-    name: c.name,
-    email: c.email,
-    phone: c.phone,
-    role: c.role,
-    experience: c.experience,
-    score: c.score,
-    stage: c.stage,
-    applied: c.applied,
-    source: c.source
-  }));
+    data.jobs = jobs.map(j => ({
+        id: j.id,
+        title: j.title,
+        department: j.department,
+        description: j.description,
+        location: j.location,
+        type: j.employment_type,
+        applicants: 0,
+        status: j.status
+    }));
 }
 function loadData(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||structuredClone(demoData)}catch{return structuredClone(demoData)}}
 function saveData(){localStorage.setItem(STORAGE_KEY,JSON.stringify(data))}
@@ -88,13 +85,15 @@ function initAuth(){
   updateUserUI();
 
   try {
-    await loadCandidates();
-  } catch (error) {
-    data.candidates = [];
-    showToast('Could not load candidates: ' + error.message);
-  }
+    await Promise.all([
+        loadCandidates(),
+        loadJobs()
+    ]);
+} catch (error) {
+    showToast('Could not load recruitment data: ' + error.message);
+}
 
-  renderAll();
+renderAll();
 };
 
  const clearSession=()=>{
@@ -266,7 +265,19 @@ function renderCandidates(){
  if(sort==='score')arr.sort((a,b)=>b.score-a.score);if(sort==='name')arr.sort((a,b)=>a.name.localeCompare(b.name));if(sort==='recent')arr.sort((a,b)=>b.applied.localeCompare(a.applied));
  $('candidateResultCount').textContent=`${arr.length} candidate${arr.length!==1?'s':''}`;$('candidateTableBody').innerHTML=arr.map(c=>`<tr><td><strong>${esc(c.name)}</strong><br><small>${esc(c.email)}</small></td><td>${esc(c.role)}</td><td>${esc(c.experience)}</td><td><strong>${c.score}%</strong></td><td><span class="tag">${esc(c.stage)}</span></td><td>${fmtDate(c.applied)}</td><td><button class="link-button" data-candidate="${c.id}">View</button></td></tr>`).join('');bindCandidateButtons();
 }
-function renderJobs(){$('jobsGrid').innerHTML=data.jobs.map(j=>`<div class="job-card"><span class="section-kicker">${esc(j.department)}</span><h3>${esc(j.title)}</h3><p>${esc(j.location)} · ${esc(j.type)}</p><div class="job-meta"><span class="tag">${j.applicants} applicants</span><span class="tag">Open</span></div></div>`).join('')}
+function renderJobs() {
+    $('jobsGrid').innerHTML = data.jobs.map(j => `
+        <div class="job-card">
+            <span class="section-kicker">${esc(j.department)}</span>
+            <h3>${esc(j.title)}</h3>
+            <p>${esc(j.location)} · ${esc(j.type)}</p>
+            <div class="job-meta">
+                <span class="tag">${j.applicants || 0} applicants</span>
+                <span class="tag">${esc(j.status || 'Open')}</span>
+            </div>
+        </div>
+    `).join('');
+}
 function renderInterviews(){const now=new Date();$('todayInterviews').textContent=data.interviews.filter(i=>i.date===now.toISOString().slice(0,10)).length;$('weekInterviews').textContent=data.interviews.length;$('pendingInterviews').textContent=data.interviews.filter(i=>i.status==='Pending').length;$('interviewList').innerHTML=data.interviews.map(i=>`<div class="interview-card"><div><h4>${esc(i.candidate)}</h4><p>${esc(i.role)} · ${esc(i.interviewer)}</p><p>${fmtDate(i.date)} · ${esc(i.time)}</p></div><div><span class="tag">${esc(i.status)}</span><br><button class="link-button" data-interview="${i.id}">Open</button></div></div>`).join('');document.querySelectorAll('[data-interview]').forEach(b=>b.onclick=()=>openInterview(+b.dataset.interview))}
 function renderPipeline(){const stages=['Applied','Screening','Shortlisted','Interview','Offer','Hired'];$('pipelineBoard').innerHTML=stages.map(s=>`<div class="pipeline-column"><h4>${s} <span class="pipeline-count">(${data.candidates.filter(c=>c.stage===s).length})</span></h4>${data.candidates.filter(c=>c.stage===s).map(c=>`<div class="pipeline-card"><strong>${esc(c.name)}</strong><span>${esc(c.role)}</span><span>AI Match ${c.score}%</span></div>`).join('')||'<span class="pipeline-count">No candidates</span>'}</div>`).join('')}
 function renderAnalytics(){const stages=['Applied','Screening','Shortlisted','Interview','Offer','Hired'];$('funnelChart').innerHTML=stages.map(s=>{const n=data.candidates.filter(c=>c.stage===s).length;const pct=data.candidates.length?Math.round(n/data.candidates.length*100):0;return `<div class="chart-row"><span class="chart-label">${s}</span><div class="chart-bar"><div class="chart-fill" style="width:${pct}%"></div></div><span class="chart-value">${n}</span></div>`}).join('');const sources={};data.candidates.forEach(c=>sources[c.source]=(sources[c.source]||0)+1);$('sourceChart').innerHTML=Object.entries(sources).map(([s,n])=>{const pct=Math.round(n/data.candidates.length*100);return `<div class="chart-row"><span class="chart-label">${esc(s)}</span><div class="chart-bar"><div class="chart-fill" style="width:${pct}%"></div></div><span class="chart-value">${n}</span></div>`}).join('')||'<p class="ai-main-text">No source data yet.</p>'}
@@ -363,7 +374,73 @@ function addCandidate() {
     }
   };
 }
-function addJob(){openModal('RECRUITMENT','Create Job',`<form class="modal-form" id="jobForm"><div><label>Job Title</label><input id="jobTitle" required></div><div><label>Department</label><input id="jobDept" required></div><div><label>Location</label><input id="jobLocation" required></div><div><label>Type</label><select id="jobType"><option>Full-time</option><option>Part-time</option><option>Contract</option></select></div><button class="primary-button">Create Job</button></form>`);$('jobForm').onsubmit=e=>{e.preventDefault();data.jobs.unshift({id:Date.now(),title:$('jobTitle').value,department:$('jobDept').value,location:$('jobLocation').value,type:$('jobType').value,applicants:0});saveData();closeModal();renderAll();showToast('Job opening created')}}
+async function addJob() {
+    openModal('RECRUITMENT', 'Create Job', `
+        <form class="modal-form" id="jobForm">
+            <div>
+                <label>Job Title</label>
+                <input id="jobTitle" required>
+            </div>
+            <div>
+                <label>Department</label>
+                <input id="jobDept" required>
+            </div>
+            <div>
+                <label>Location</label>
+                <input id="jobLocation" required>
+            </div>
+            <div>
+                <label>Type</label>
+                <select id="jobType">
+                    <option>Full-time</option>
+                    <option>Part-time</option>
+                    <option>Contract</option>
+                </select>
+            </div>
+            <div>
+                <label>Description</label>
+                <textarea id="jobDescription" required></textarea>
+            </div>
+            <button type="submit" class="primary-button">Create Job</button>
+        </form>
+    `);
+
+    const form = $('jobForm');
+
+    form.onsubmit = async function(e) {
+        e.preventDefault();
+
+        const job = {
+            title: $('jobTitle').value.trim(),
+            department: $('jobDept').value.trim(),
+            location: $('jobLocation').value.trim(),
+            employment_type: $('jobType').value,
+            description: $('jobDescription').value.trim()
+        };
+
+        try {
+            console.log('Submitting job:', job);
+
+            const result = await apiFetch('/api/jobs', {
+                method: 'POST',
+                body: JSON.stringify(job)
+            });
+
+            console.log('Job created:', result);
+
+            await loadJobs();
+            closeModal();
+            renderAll();
+
+            showToast('Job saved to PostgreSQL successfully');
+
+        } catch (error) {
+            console.error('Job creation failed:', error);
+            showToast('Job creation failed: ' + error.message);
+        }
+    };
+}
+
 function scheduleInterview(){openModal('INTERVIEW MANAGEMENT','Schedule Interview',`<form class="modal-form" id="interviewForm"><div><label>Candidate</label><select id="intCandidate">${data.candidates.map(c=>`<option value="${c.id}">${esc(c.name)} — ${esc(c.role)}</option>`).join('')}</select></div><div><label>Date</label><input type="date" id="intDate" required></div><div><label>Time</label><input type="text" id="intTime" placeholder="10:30 AM" required></div><div><label>Interviewer</label><input id="intInterviewer" required></div><button class="primary-button">Schedule Interview</button></form>`);$('interviewForm').onsubmit=e=>{e.preventDefault();const c=data.candidates.find(x=>x.id===+$('intCandidate').value);data.interviews.push({id:Date.now(),candidate:c.name,role:c.role,date:$('intDate').value,time:$('intTime').value,interviewer:$('intInterviewer').value,status:'Scheduled',link:'https://meet.google.com/'});saveData();closeModal();renderAll();showToast('Interview scheduled')}}
 
 function initActions(){document.querySelectorAll('[data-action="add-candidate"]').forEach(b=>b.onclick=addCandidate);document.querySelectorAll('[data-action="add-job"]').forEach(b=>b.onclick=addJob);document.querySelectorAll('[data-action="schedule-interview"]').forEach(b=>b.onclick=scheduleInterview);$('modalClose').onclick=closeModal;$('modalOverlay').onclick=e=>{if(e.target===$('modalOverlay'))closeModal();};$('themeToggle').onclick=()=>{document.body.classList.toggle('dark');localStorage.setItem('talentflow_theme',document.body.classList.contains('dark')?'dark':'light')};if(localStorage.getItem('talentflow_theme')==='dark')document.body.classList.add('dark');$('notificationButton').onclick=()=>{$('notificationPanel').classList.toggle('hidden');$('notificationDot').style.display='none'};$('clearNotifications').onclick=()=>{$('notificationList').innerHTML='<p style="padding:15px;color:var(--muted);font-size:12px">No new notifications.</p>'};$('generateInsight').onclick=()=>{const total=data.candidates.length,avg=total?Math.round(data.candidates.reduce((a,c)=>a+c.score,0)/total):0;$('aiInsightContent').innerHTML=`<p class="ai-main-text"><strong>${total} candidates</strong> are currently in the talent pool with an average AI match of <strong>${avg}%</strong>. ${data.interviews.length} interviews are scheduled. Review high-match candidates first and keep interview stages moving.</p>`;showToast('AI insight generated')};$('globalSearch').oninput=e=>{const q=e.target.value.trim();if(q){navigate('candidates');$('candidateSearch').value=q;renderCandidates()}};['candidateSearch','candidateStatusFilter','candidateRoleFilter','candidateSort'].forEach(id=>$(id).addEventListener('input',renderCandidates));$('settingAI').onchange=e=>{data.settings.ai=e.target.checked;saveData()};$('settingNotifications').onchange=e=>{data.settings.notifications=e.target.checked;saveData()};$('settingCompact').onchange=e=>{data.settings.compact=e.target.checked;saveData();renderSettings()};$('resetData').onclick=()=>{if(confirm('Reset all demo recruitment data?')){data=structuredClone(demoData);saveData();renderAll();showToast('Demo data reset')}}}

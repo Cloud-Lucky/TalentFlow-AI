@@ -36,21 +36,70 @@ def me():
 
 @api.get("/jobs")
 def list_jobs():
-    jobs = Job.query.filter_by(status="open").order_by(Job.created_at.desc()).all()
-    return jsonify([{"id": j.id, "title": j.title, "department": j.department, "description": j.description, "created_at": j.created_at.isoformat()} for j in jobs])
+    jobs = Job.query.filter_by(status="open").order_by(
+        Job.created_at.desc()
+    ).all()
+
+    return jsonify([
+        {
+            "id": j.id,
+            "title": j.title,
+            "department": j.department,
+            "description": j.description,
+            "location": j.location,
+            "employment_type": j.employment_type,
+            "status": j.status,
+            "created_at": j.created_at.isoformat()
+        }
+        for j in jobs
+    ])
+
 
 @api.post("/jobs")
 @jwt_required()
 def create_job():
     data = request.get_json(silent=True) or {}
-    title, description = str(data.get("title", "")).strip(), str(data.get("description", "")).strip()
-    if not title or not description: return jsonify(error="title and description are required"), 400
-    job = Job(title=title, department=str(data.get("department", ""))[:120], description=description, created_by=int(get_jwt_identity()))
-    db.session.add(job); db.session.commit()
-    try: publish_event("JOB_CREATED", {"job_id": job.id, "title": job.title})
-    except Exception: current_app.logger.exception("EventBridge publish failed; job was still created")
-    return jsonify(id=job.id, title=job.title, department=job.department, description=job.description, status=job.status), 201
 
+    title = str(data.get("title", "")).strip()
+    description = str(data.get("description", "")).strip()
+    department = str(data.get("department", "")).strip()
+    location = str(data.get("location", "")).strip()
+    employment_type = str(data.get("employment_type", "Full-time")).strip()
+
+    if not title or not description:
+        return jsonify(error="Title and description are required"), 400
+
+    job = Job(
+        title=title[:160],
+        department=department[:120],
+        description=description,
+        location=location[:160],
+        employment_type=employment_type[:40],
+        created_by=int(get_jwt_identity())
+    )
+
+    db.session.add(job)
+    db.session.commit()
+
+    try:
+        publish_event("JOB_CREATED", {
+            "job_id": job.id,
+            "title": job.title
+        })
+    except Exception:
+        current_app.logger.exception(
+            "EventBridge publish failed; job was still created"
+        )
+
+    return jsonify(
+        id=job.id,
+        title=job.title,
+        department=job.department,
+        description=job.description,
+        location=job.location,
+        employment_type=job.employment_type,
+        status=job.status
+    ), 201
 
 @api.get("/candidates")
 @jwt_required()
