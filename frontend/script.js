@@ -55,20 +55,23 @@ async function apiFetch(url, options = {}) {
 
   return result;
 }
-async function loadJobs() {
-    const jobs = await apiFetch('/api/jobs');
+async function loadCandidates() {
+    const candidates = await apiFetch('/api/candidates');
 
-    data.jobs = jobs.map(j => ({
-        id: j.id,
-        title: j.title,
-        department: j.department,
-        description: j.description,
-        location: j.location,
-        type: j.employment_type,
-        applicants: 0,
-        status: j.status
+    data.candidates = candidates.map(c => ({
+        id: c.id,
+        name: c.full_name,
+        email: c.email,
+        phone: c.phone,
+        role: c.role,
+        experience: c.experience,
+        score: c.score,
+        stage: c.stage,
+        source: c.source,
+        applied: c.applied || ''
     }));
 }
+
 function loadData(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||structuredClone(demoData)}catch{return structuredClone(demoData)}}
 function saveData(){localStorage.setItem(STORAGE_KEY,JSON.stringify(data))}
 function showToast(message){const el=document.createElement('div');el.className='toast';el.textContent=message;$('toastContainer').appendChild(el);setTimeout(()=>el.remove(),2800)}
