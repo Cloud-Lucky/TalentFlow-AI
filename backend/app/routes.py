@@ -3,7 +3,13 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 from sqlalchemy.exc import IntegrityError
 from .extensions import db
 from .models import User, Job, Candidate, Application
-from .services import create_resume_upload, publish_resume_job, publish_event
+from botocore.exceptions import ClientError
+from .services import (
+    create_resume_upload,
+    verify_resume_upload,
+    publish_resume_job,
+    publish_event
+)
 
 api = Blueprint("api", __name__)
 
@@ -215,6 +221,7 @@ def update_candidate(candidate_id):
     ), 200
 
 @api.post("/resumes/presign")
+@jwt_required()
 def presign_resume():
     data = request.get_json(silent=True) or {}
     name, content_type = str(data.get("filename", "")), str(data.get("content_type", ""))
@@ -241,18 +248,62 @@ def apply_for_job():
     return jsonify(id=application.id, job_id=job_id, candidate_id=candidate_id, status=application.status), 201
 
 @api.post("/candidates/<int:candidate_id>/resume-complete")
+@jwt_required()
 def resume_complete(candidate_id):
     data = request.get_json(silent=True) or {}
     key = str(data.get("object_key", ""))
-    if not key.startswith("resumes/") or ".." in key: return jsonify(error="Invalid object_key"), 400
+
+    if not key.startswith("resumes/") or ".." in key:
+        return jsonify(error="Invalid object_key"), 400
+
     candidate = db.session.get(Candidate, candidate_id)
-    if not candidate: return jsonify(error="Candidate not found"), 404
-    candidate.resume_key = key; db.session.commit()
-    try: queue_status = publish_resume_job(candidate.id, key)
-    except Exception: current_app.logger.exception("Queue publish failed"); return jsonify(error="Resume saved but processing could not be queued"), 503
-    try: publish_event("RESUME_UPLOADED", {"candidate_id": candidate.id, "object_key": key})
-    except Exception: current_app.logger.exception("EventBridge publish failed")
-    return jsonify(candidate_id=candidate.id, resume_key=key, processing=queue_status), 202
+
+    if not candidate:
+        return jsonify(error="Candidate not found"), 404
+
+    try:
+        verify_resume_upload(key)
+
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            return jsonify(error="Uploaded resume not found in S3"), 400
+
+        current_app.logger.exception("S3 resume verification failed")
+        return jsonify(error="Could not verify uploaded resume"), 503
+
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    except Exception:
+        current_app.logger.exception("S3 resume verification failed")
+        return jsonify(error="Could not verify uploaded resume"), 503
+
+    candidate.resume_key = key
+    db.session.commit()
+
+    try:
+        queue_status = publish_resume_job(candidate.id, key)
+    except Exception:
+        current_app.logger.exception("Queue publish failed")
+        return jsonify(
+            error="Resume saved but processing could not be queued"
+        ), 503
+
+    try:
+        publish_event("RESUME_UPLOADED", {
+            "candidate_id": candidate.id,
+            "object_key": key
+        })
+    except Exception:
+        current_app.logger.exception("EventBridge publish failed")
+
+    return jsonify(
+        candidate_id=candidate.id,
+        resume_key=key,
+        processing=queue_status
+    ), 202
 
 @api.get("/applications")
 @jwt_required()
