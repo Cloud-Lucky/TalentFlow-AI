@@ -17,3 +17,10 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+  worker:
+    build: ./backend
+    command: ["python", "worker.py"]
+    env_file:
+      - .env
+    restart: unless-stopped

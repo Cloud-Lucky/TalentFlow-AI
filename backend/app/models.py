@@ -53,6 +53,8 @@ class Candidate(db.Model):
     stage = db.Column(db.String(32), nullable=False, default="Applied")
     source = db.Column(db.String(80), nullable=False, default="Website")
     resume_key = db.Column(db.String(1024), default="")
+    resume_text = db.Column(db.Text, nullable=True)
+    resume_processed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
