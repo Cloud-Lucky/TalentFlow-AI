@@ -58,8 +58,31 @@ def extract_pdf_text(object_key):
     return extracted_text
 
 
-def update_candidate(candidate_id, resume_text):
-    """Save extracted resume text in PostgreSQL."""
+def is_resume_already_processed(candidate_id, object_key):
+    """Check whether this exact resume has already been processed."""
+
+    with engine.connect() as connection:
+        result = connection.execute(
+            text("""
+                SELECT resume_processed_at
+                FROM candidate
+                WHERE id = :candidate_id
+                  AND resume_key = :object_key
+            """),
+            {
+                "candidate_id": candidate_id,
+                "object_key": object_key
+            }
+        ).first()
+
+        if result is None:
+            return False
+
+        return result[0] is not None
+
+
+def update_candidate(candidate_id, object_key, resume_text):
+    """Save extracted text only if this is still the candidate's current resume."""
 
     with engine.begin() as connection:
         result = connection.execute(
@@ -68,30 +91,81 @@ def update_candidate(candidate_id, resume_text):
                 SET resume_text = :resume_text,
                     resume_processed_at = :processed_at
                 WHERE id = :candidate_id
+                  AND resume_key = :object_key
             """),
             {
                 "resume_text": resume_text,
                 "processed_at": datetime.now(timezone.utc),
-                "candidate_id": candidate_id
+                "candidate_id": candidate_id,
+                "object_key": object_key
             }
         )
 
-        if result.rowcount != 1:
+        if result.rowcount == 1:
+            return True
+
+        candidate_exists = connection.execute(
+            text("""
+                SELECT 1 FROM candidate WHERE id = :candidate_id
+            """),
+            {"candidate_id": candidate_id}
+        ).first()
+
+        if not candidate_exists:
             raise ValueError(
                 f"Candidate {candidate_id} was not found"
             )
 
+        logger.warning(
+            "Skipping outdated resume message for candidate ID %s",
+            candidate_id
+        )
+        return False
+
+
+
 
 def process_message(message):
-    """Process one SQS message."""
+    """Validate and process one SQS message."""
 
-    body = json.loads(message["Body"])
+    try:
+        body = json.loads(message["Body"])
+    except (KeyError, json.JSONDecodeError) as exc:
+        raise ValueError("Message body is not valid JSON") from exc
 
-    candidate_id = int(body["candidate_id"])
-    object_key = body["object_key"]
+    if not isinstance(body, dict):
+        raise ValueError("Message body must be a JSON object")
 
-    if not object_key.startswith("resumes/") or ".." in object_key:
-        raise ValueError("Invalid S3 object key")
+    candidate_id = body.get("candidate_id")
+    object_key = body.get("object_key")
+
+    # Validate candidate ID
+    if (
+        isinstance(candidate_id, bool)
+        or not isinstance(candidate_id, int)
+        or candidate_id <= 0
+    ):
+        raise ValueError("candidate_id must be a positive integer")
+
+    # Validate S3 object key
+    if not isinstance(object_key, str) or not object_key:
+        raise ValueError("object_key must be a non-empty string")
+
+    key_parts = object_key.split("/")
+
+    if (
+        len(key_parts) < 2
+        or key_parts[0] != "resumes"
+        or any(part in ("", ".", "..") for part in key_parts)
+    ):
+        raise ValueError("Invalid S3 resume object key")
+
+    if is_resume_already_processed(candidate_id, object_key):
+        logger.info(
+            "Resume already processed for candidate ID %s; skipping",
+            candidate_id
+        )
+        return
 
     logger.info(
         "Processing resume for candidate ID %s",
@@ -100,13 +174,25 @@ def process_message(message):
 
     resume_text = extract_pdf_text(object_key)
 
-    update_candidate(candidate_id, resume_text)
+    updated = update_candidate(
+        candidate_id,
+        object_key,
+        resume_text
+    )
+
+    if not updated:
+        logger.info(
+            "Skipped outdated resume for candidate ID %s",
+            candidate_id
+        )
+        return
 
     logger.info(
         "Successfully processed candidate ID %s; extracted %s characters",
         candidate_id,
         len(resume_text)
     )
+
 
 
 def main():
