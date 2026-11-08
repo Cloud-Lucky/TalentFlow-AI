@@ -1,157 +1,276 @@
-# TalentFlow AI — AWS implementation starter
+TalentFlow AI
+An AI-powered recruitment and talent management platform deployed on AWS
+using Amazon EKS. The project demonstrates containerized application
+deployment, asynchronous resume processing, event-driven automation,
+cloud security controls, and monitoring.
+Project status: The application and the infrastructure components
+listed below were implemented and validated to the extent described in
+this README. This is an internship project, not a claim of formal
+production certification.
 
-This package extends the public TalentFlow-AI frontend repository with a beginner-friendly backend API, local Docker development environment, and Terraform scaffolding for AWS. It is an implementation starter, not a claim that AWS resources have already been deployed or that all business features are production-ready.
+Table of Contents
+- Architecture
+- Technology Stack
+- AWS Resources
+- Application Components
+- Resume Processing Workflow
+- Event-Driven Workflow
+- Monitoring and Alerts
+- Security
+- Deployment Overview
+- Validation Performed
+- Operational Notes
+- Limitations and Follow-up Work
+Architecture
+```mermaid
+flowchart TD
+    U[Candidates / Recruiters / Admins] --> R[Route 53 DNS]
+    R --> TLS[ACM TLS Certificate]
+    TLS --> ALB[Application Load Balancer]
+    ALB --> ING[Kubernetes Ingress]
+    ING --> FE[Frontend: NGINX<br/>2 replicas]
+    ING --> API[Backend: Flask API<br/>2 replicas]
 
-## What is included
+    API --> DB[(Amazon RDS PostgreSQL)]
+    API --> S3[(Private Amazon S3<br/>Resume Bucket)]
+    API --> Q[Amazon SQS Resume Queue]
+    Q --> W[Resume Worker<br/>1 replica on EKS]
+    W --> S3
+    W --> DB
+    Q --> DLQ[Dead-Letter Queue]
 
-- `backend/`: Flask REST API, JWT authentication, SQLAlchemy models for users/jobs/candidates/applications, S3 presigned PDF uploads, SQS job publishing, EventBridge events, health endpoints.
-- `docker-compose.yml`: local PostgreSQL, API, and Nginx frontend.
-- `terraform/`: VPC with public/app/database subnets, ALB, ECS Fargate service with autoscaling, private PostgreSQL RDS, private S3 buckets for resumes and frontend, CloudFront, ECR, SQS + DLQ, SNS, EventBridge, Lambda resume worker, CloudWatch logs and IAM roles.
-- `lambda/resume_worker/`: SQS-triggered worker validates the S3 object exists. PDF extraction and AI screening are intentionally not faked; implement and test those steps before enabling them.
-- `.github/workflows/ci.yml`: basic Python syntax CI.
+    API --> EB[Amazon EventBridge Rule]
+    EB --> L[ AWS Lambda Handler ]
 
-## Important: copy the original frontend files
-
-The repository owner’s original frontend source is not duplicated in this starter. Clone your original repository, then copy these files into this package's `frontend/` directory:
-
-- `index.html`
-- `style.css`
-- `script.js`
-- `1.png`
-
-Keep the filenames unchanged. The original front end currently uses browser-side demo behavior; it will not automatically use this new API. The backend endpoints are available under `/api`. Wire the UI's login, job, candidate, application, and resume-upload actions to the API before calling it a fully integrated application. Never ship demo credentials or client-side-only authentication in production.
-
-## Local run (Docker Desktop required)
-
-1. Install Docker Desktop and start it.
-2. Copy `.env.example` to `.env`.
-3. Replace `SECRET_KEY` and `JWT_SECRET_KEY` with long random values. Do not commit `.env`.
-4. Copy the four frontend files listed above into `frontend/`.
-5. Run:
-
-```bash
-docker compose up --build
+    EKS[Amazon EKS Cluster] --> CW[CloudWatch Container Insights]
+    CW --> A[CloudWatch Alarms]
+    A --> SNS[Amazon SNS Email Notification]
+    EKS --> CT[AWS CloudTrail]
 ```
+The diagram shows the logical application flow. It is not a subnet-level
+network diagram and does not specify individual subnet IDs, Availability
+Zones, or route tables.
+Technology Stack
+  Area                      Technologies
+  Cloud platform            AWS
+Container orchestration   Amazon EKS, Kubernetes
+Containers                Docker
+Frontend                  NGINX
+Backend                   Python, Flask
+Database                  Amazon RDS for PostgreSQL
+Object storage            Amazon S3
+Messaging                 Amazon SQS, Dead-Letter Queue
+Event-driven processing   Amazon EventBridge, AWS Lambda
+DNS and TLS               Amazon Route 53, AWS Certificate Manager
+Load balancing            Application Load Balancer
+Monitoring                Amazon CloudWatch, Container Insights
+Notifications             Amazon SNS
+Audit logging             AWS CloudTrail
+Identity                  IAM Roles, EKS Pod Identity
+AWS Resources
+The deployed environment includes the following resources:
+- Amazon EKS: Cluster talentflow-eks in us-east-1.
+- Kubernetes namespace: talentflow.
+- Deployments: talentflow-frontend, talentflow-api, and
+  talentflow-resume-worker.
+- Amazon RDS: Private PostgreSQL database.
+- Amazon S3: Private resume bucket
+  talentflow-resumes-488519936337.
+- Amazon SQS: TalentFlow-Resume-Queue and
+  TalentFlow-Resume-DLQ.
+- Amazon EventBridge: TalentFlow-JobCreated-Rule.
+- AWS Lambda: TalentFlow-JobCreated-Handler.
+- Amazon CloudWatch: EKS Container Insights metrics and
+  application/platform log groups, plus CPU and memory alarms.
+- Amazon SNS: TalentFlow-CloudWatch-Alerts email topic.
+- AWS CloudTrail: TalentFlow-Security-Trail.
+- Amazon Route 53 / ACM / ALB: DNS, TLS certificate, and HTTPS
+  application entry point.
+The application URL used during validation was:
 
-6. Open `http://localhost:8080` for the frontend and `http://localhost:5000/health` for API health.
-7. API readiness check: `http://localhost:5000/api/health/ready`.
+https://talentflow.unicornworlds.online
+Application Components
+Frontend
+- Served by NGINX in Kubernetes.
+- Deployed as talentflow-frontend.
+- Configured with two replicas.
+- The ingress/load-balancer path routes browser traffic to the
+  frontend.
+Backend API
+- Python Flask application.
+- Deployed as talentflow-api.
+- Configured with two replicas.
+- Connects to PostgreSQL and AWS services required by the application.
+- NGINX forwards /api/ requests to the backend service.
+Resume worker
+- Deployed as talentflow-resume-worker.
+- Configured with one replica.
+- Runs python worker.py.
+- Reads resume-processing messages from SQS, downloads the PDF from
+  S3, extracts text, and updates the candidate record in PostgreSQL.
+Resume Processing Workflow
+1. A candidate uploads a PDF resume through the application.
+2. The backend validates the object key and uploaded file, including
+   the PDF signature and configured size limit.
+3. The resume is stored in the private S3 bucket.
+4. The backend records the resume key and sends a message to
+   TalentFlow-Resume-Queue.
+5. The worker receives the message and downloads the PDF from S3.
+6. The worker extracts text from the PDF using pypdf.
+7. The worker updates the candidate record with the extracted text and
+   processing timestamp.
+8. After successful processing, the worker deletes the message from
+   SQS. Failed messages can be retried and eventually routed to the
+   configured dead-letter queue according to the queue redrive policy.
+The worker uses a dedicated IAM role through EKS Pod Identity. Its S3
+read permission is scoped to the resumes/ object prefix, and its SQS
+permissions are scoped to the resume queue.
+Event-Driven Workflow
+The project includes an EventBridge rule named
+TalentFlow-JobCreated-Rule and a Lambda function named
+TalentFlow-JobCreated-Handler.
 
-The local API defaults to SQLite if run outside Compose, but Compose uses PostgreSQL. AWS integrations require valid AWS credentials and the configured bucket, queue and event bus. Local use does not require AWS credentials if those integrations are not called.
+A test job-created event was sent through the configured path, and the
+test event was observed in the Lambda CloudWatch logs. This validates
+the tested event path; it does not imply that every possible application
+event or business scenario has been tested.
+Monitoring and Alerts
+Amazon CloudWatch and the EKS Observability add-on are used for cluster
+and workload monitoring.
 
-## API quick start
+Configured log groups include:
+- /aws/containerinsights/talentflow-eks/application
+- /aws/containerinsights/talentflow-eks/dataplane
+- /aws/containerinsights/talentflow-eks/host
+- /aws/containerinsights/talentflow-eks/performance
+- /aws/eks/talentflow-eks/cluster
+- /aws/lambda/TalentFlow-JobCreated-Handler
+Configured alarms:
+- TalentFlow-EKS-High-CPU --- alarm threshold above 80% CPU
+  utilization.
+- TalentFlow-EKS-High-Memory --- alarm threshold at or above 80%
+  memory utilization.
+The alarms publish notifications through the
+TalentFlow-CloudWatch-Alerts SNS topic. An alarm notification was
+manually tested and an email was received.
+Security
+Security controls implemented or reviewed include:
+- Private RDS database; inbound PostgreSQL access is restricted to the
+  EKS cluster security group.
+- Private S3 resume bucket with S3 Block Public Access enabled,
+  bucket-owner-enforced object ownership, and SSE-S3 encryption.
+- IAM roles and EKS Pod Identity for workload access to AWS services.
+- Separate API and resume-worker IAM permissions.
+- Resume-worker S3 access scoped to the resumes/ prefix.
+- Resume-worker SQS access scoped to the resume queue.
+- Kubernetes application configuration and credentials supplied
+  through Kubernetes Secrets / Parameter Store integration.
+- HTTPS application access using an ACM certificate and Application
+  Load Balancer.
+- CloudTrail multi-region management-event logging with log-file
+  validation enabled.
+- Management EC2 access through AWS Systems Manager; no inbound SSH
+  rule was configured for that instance during the review.
+Do not commit passwords, database connection strings, JWT secrets,
+private keys, access keys, Kubernetes Secret values, or other
+credentials to this repository.
+Deployment Overview
+The following is a high-level deployment outline. Exact image tags,
+manifests, environment variables, and account-specific settings should
+be checked in the repository and AWS environment before running
+commands.
+1. Clone the repository and review its README, Dockerfiles, Compose
+   files, and Kubernetes manifests.
+2. Build and test the frontend and backend containers.
+3. Push the required container images to Amazon ECR.
+4. Configure AWS access using an approved IAM role or AWS IAM Identity
+   Center. Avoid hard-coding access keys.
+5. Configure kubectl for the talentflow-eks cluster.
+6. Ensure the talentflow namespace, workload IAM roles/Pod Identity
+   associations, Kubernetes Secrets, and application configuration are
+   present.
+7. Apply or update the Kubernetes deployments, services, and ingress
+   resources.
+8. Verify rollout status, pod health, service endpoints, ingress, and
+   application health endpoints.
+9. Verify the resume queue/worker path and the CloudWatch logs and
+   alarms.
+Useful inspection commands:
+# Confirm AWS identity and region
+aws sts get-caller-identity
+aws configure get region
 
-Register a development recruiter (use a strong password):
+# Configure kubectl for the cluster
+aws eks update-kubeconfig --region us-east-1 --name talentflow-eks
 
-```bash
-curl -X POST http://localhost:5000/api/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"recruiter@example.com","password":"ChangeThisToALongUniquePassword"}'
-```
+# Inspect Kubernetes resources
+kubectl get nodes
+kubectl get all -n talentflow
+kubectl get ingress -n talentflow
 
-Log in:
+# Check deployments and pods
+kubectl rollout status deployment/talentflow-api -n talentflow
+kubectl rollout status deployment/talentflow-frontend -n talentflow
+kubectl rollout status deployment/talentflow-resume-worker -n talentflow
+kubectl get pods -n talentflow -o wide
 
-```bash
-curl -X POST http://localhost:5000/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"recruiter@example.com","password":"ChangeThisToALongUniquePassword"}'
-```
-
-Create a job with the returned access token:
-
-```bash
-curl -X POST http://localhost:5000/api/jobs \
-  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Cloud Engineer","department":"Engineering","description":"AWS and automation experience"}'
-```
-
-Public API endpoints currently include `GET /api/jobs`, `POST /api/candidates`, `POST /api/applications`, `POST /api/resumes/presign`, and `POST /api/candidates/<id>/resume-complete`. Protected endpoints include `POST /api/jobs`, `GET /api/applications`, and `GET /api/me`.
-
-## AWS deployment order
-
-### A. Build and push the API image to ECR
-
-Create the ECR repository using the AWS Console or a first Terraform apply after adapting `container_image` to a temporary valid image URI. The cleaner beginner approach is to create the ECR repository first in the console, push the image, then configure Terraform with the immutable tag.
-
-```bash
-aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com
-docker build -t talentflow-api ./backend
-docker tag talentflow-api:latest ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com/talentflow-api:v1
-docker push ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com/talentflow-api:v1
-```
-
-Replace `ACCOUNT_ID`, region, repository and tag with your actual values.
-
-### B. Configure Terraform
-
-```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-```
-
-Set `container_image` to the pushed image URI. Supply secrets through environment variables rather than committing them:
-
-```bash
-export TF_VAR_db_password='UseAUniqueStrongPasswordHere'
-export TF_VAR_app_secret_key='UseAnotherLongRandomSecretHere'
-terraform init
-terraform fmt -recursive
-terraform validate
-terraform plan
-```
-
-Review the plan and estimate charges before `terraform apply`. This starter creates chargeable resources, including NAT Gateway, ALB, RDS, Fargate tasks, CloudFront, and logs. You are responsible for reviewing the plan and deleting resources when finished.
-
-**First-deployment caveat:** ECS cannot start until the image exists in ECR, and the Terraform configuration references the image. Create ECR first using the console or split ECR into an initial bootstrap configuration, push the image, and then apply the main stack. Do not use `latest` in a production pipeline; use immutable version tags.
-
-### C. Publish the static frontend
-
-After Terraform creates the frontend bucket and CloudFront distribution, copy the four original website files to the bucket:
-
-```bash
-aws s3 sync ../frontend s3://YOUR_FRONTEND_BUCKET/ --delete
-aws cloudfront create-invalidation --distribution-id YOUR_DISTRIBUTION_ID --paths '/*'
-```
-
-Use the actual output values. The CloudFront default domain uses the default CloudFront certificate. For a custom domain, configure Route 53 and an ACM certificate in `us-east-1`, then update the distribution configuration.
-
-### D. Configure the frontend to call the API
-
-The current Terraform exposes the API on the ALB HTTP listener for lab setup and creates the frontend CloudFront distribution separately. Before real use, configure HTTPS and route `/api/*` to the ALB using CloudFront behaviors or a custom domain/reverse proxy, then update `CORS_ORIGINS` to the exact frontend origin. The sample `CORS_ORIGINS="*"` in Terraform is intentionally marked for replacement; wildcard CORS is not recommended for a real application.
-
-## AWS services mapped to the internship report
-
-| Report component | Starter implementation |
-|---|---|
-| VPC, public/private subnets, routing | Terraform VPC resources |
-| Application compute and scaling | ECS Fargate service + target tracking; an alternative to EC2 Auto Scaling |
-| ALB | Terraform Application Load Balancer |
-| RDS | Private PostgreSQL RDS |
-| S3 | Private resume bucket and private frontend bucket |
-| SQS + DLQ | Resume processing queue and dead-letter queue |
-| Lambda | SQS-triggered resume worker (object validation only) |
-| SNS | Notification topic; add a confirmed email subscription manually |
-| EventBridge | Application event bus/rule; API publishes events |
-| CloudWatch | ECS logs and Lambda logs |
-| Route 53 | Not created automatically; requires a domain/hosted zone you control |
-| CloudTrail / AWS Config | Account-level governance; enable separately after reviewing cost/retention |
-| Terraform | Main infrastructure stack |
-| ECR | API image repository |
-
-## Known gaps before production
-
-- The existing frontend has not been modified to call the new API; this requires UI integration and browser testing.
-- The backend schema uses `db.create_all()` for a starter. Add Alembic/Flask-Migrate migrations before production.
-- The initial auth API is a minimal example. Add email verification, password reset, rate limiting, recruiter/admin provisioning, RBAC enforcement, CSRF considerations where cookies are used, and audit logging.
-- The API currently exposes candidate creation and application submission without candidate authentication. Add authorization and anti-abuse controls before using real candidate data.
-- The SQS Lambda worker currently validates object existence only. It does not parse PDFs, invoke an AI model, write evaluation results to RDS, or make hiring decisions.
-- Resume upload completion must be bound to an authenticated candidate and verified against the actual S3 object metadata. Add file-size limits, malware scanning, retention/deletion controls, and private presigned GET URLs.
-- The API publishes EventBridge events best-effort; production should use a transactional outbox/retry strategy so database commits and event delivery remain consistent.
-- Terraform embeds a DB connection string and application secret in ECS task-definition environment values. For production, move these to Secrets Manager and reference them as ECS secrets.
-- RDS deletion protection is disabled and final snapshots are skipped in this learning stack. Change both before production.
-- TLS listener, custom domain, Route 53 records, CloudTrail organization trail, AWS Config rules, budget alerts, and detailed CloudWatch alarms need final configuration.
-- This stack uses ECS Fargate, which is a deliberate deployment simplification. If your mentor explicitly requires EC2 and EC2 Auto Scaling, replace the ECS compute layer with an EC2 launch template/Auto Scaling Group behind the same ALB.
-
-## Teardown
-
-When you are done with the lab, run `terraform destroy` only after reviewing the plan. Empty S3 buckets first if they contain objects; `force_destroy` is disabled to prevent accidental deletion. Preserve any data you need. Deleting infrastructure does not necessarily delete every separately configured resource, such as a manually created hosted zone or account-level CloudTrail trail.
+# Inspect logs (replace POD_NAME with an actual pod name)
+kubectl logs POD_NAME -n talentflow
+These commands are for inspection and verification. Review the actual
+manifest files and environment-specific values before applying changes.
+Validation Performed
+The following checks were recorded during project implementation:
+- Application URL opened and login/dashboard pages were accessible.
+- API readiness endpoint returned a ready response with database
+  status ok.
+- Resume upload and asynchronous processing were verified for a test
+  candidate (candidate ID 28).
+- The candidate record contained extracted resume text and a
+  processing timestamp after the worker ran.
+- The SQS queue had no visible or in-flight messages in a subsequent
+  check.
+- The EventBridge test event was observed in the Lambda CloudWatch
+  logs.
+- CloudWatch EKS metrics and logs were available.
+- A CloudWatch alarm notification was manually tested and received by
+  email.
+- The RDS database was configured as private and the S3 resume bucket
+  was configured as private.
+These are specific validation results, not a claim that every feature,
+failure scenario, security control, or production-readiness requirement
+has been exhaustively tested.
+Operational Notes
+- The EC2 management instance is separate from the EKS application
+  workloads. Stopping or terminating it does not automatically
+  terminate the EKS cluster, RDS, S3, or other independent AWS
+  resources. However, files stored only on that EC2 instance may be
+  lost on termination.
+- Before stopping or terminating any AWS resource, identify
+  dependencies and check whether it is still needed for
+  administration, deployment, or troubleshooting.
+- AWS resources can continue to incur charges even when the management
+  EC2 instance is stopped. EKS, load balancers, NAT gateways, RDS,
+  storage, and other services may have separate costs.
+- Check the AWS Billing console and resource inventory before leaving
+  the environment running.
+Limitations and Follow-up Work
+Items identified for possible future improvement include:
+- Review broad outbound network access and introduce Kubernetes
+  NetworkPolicies where appropriate.
+- Review IAM policies for least-privilege scope.
+- Consider continuous ECR image scanning in addition to on-push
+  scanning.
+- Review whether CloudTrail data events are required for the project's
+  audit needs.
+- Reassess the seven-day retention configured for selected CloudWatch
+  log groups.
+- Review CloudTrail log-bucket encryption and any additional delivery
+  integrations.
+- Perform broader application, resilience, load, and security testing
+  before any production use.
+Repository
+Source code: TalentFlow AI on
+GitHub
+Maintainer: Project internship team
+Environment: AWS us-east-1
+Project: TalentFlow AI
