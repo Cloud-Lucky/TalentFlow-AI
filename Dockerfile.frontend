@@ -1,0 +1,9 @@
+FROM nginx:1.27-alpine
+
+# Remove default Nginx welcome page
+RUN rm -rf /usr/share/nginx/html/*
+
+# Copy TalentFlow frontend files
+COPY frontend/ /usr/share/nginx/html/
+
+EXPOSE 80

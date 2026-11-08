@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: talentflow-frontend
+  namespace: talentflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: talentflow-frontend
+  template:
+    metadata:
+      labels:
+        app: talentflow-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: 488519936337.dkr.ecr.us-east-1.amazonaws.com/talentflow-frontend:v1
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: frontend-nginx-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: talentflow
+spec:
+  type: ClusterIP
+  selector:
+    app: talentflow-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
